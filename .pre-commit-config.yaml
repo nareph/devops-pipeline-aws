@@ -1,0 +1,35 @@
+repos:
+  # ── Hooks généraux ────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # ── Détection de secrets AWS ──────────────────────────────
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+
+  # ── Conventional Commits ──────────────────────────────────
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [feat, fix, docs, refactor, test, chore, ci]
+
+  # ── Protection branche main ───────────────────────────────
+  - repo: local
+    hooks:
+      - id: protect-main
+        name: Protect main branch
+        entry: .githooks/pre-push
+        language: script
+        stages: [pre-push]

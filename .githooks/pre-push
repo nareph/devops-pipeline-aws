@@ -1,0 +1,13 @@
+#!/bin/bash
+
+PROTECTED_BRANCH="main"
+CURRENT_BRANCH=$(git symbolic-ref HEAD | sed 's|refs/heads/||')
+
+if [ "$CURRENT_BRANCH" = "$PROTECTED_BRANCH" ]; then
+    echo "❌ Push direct sur 'main' interdit."
+    echo "   Créez une PR depuis 'develop'."
+    exit 1
+fi
+
+echo "✅ Push autorisé sur '$CURRENT_BRANCH'"
+exit 0
