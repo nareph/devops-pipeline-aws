@@ -1,0 +1,71 @@
+# .github/workflows/publish-docker-image.yml
+name: Publish Docker image to GHCR
+
+# Trigger on pushes to the 'develop' branch (perfect for initial testing)
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'app/**'
+      - '.github/workflows/publish-docker-image.yml'
+  # Allows you to manually trigger the workflow from the GitHub UI
+  workflow_dispatch:
+
+# Environment variables used throughout the workflow
+env:
+  REGISTRY: ghcr.io
+  # Image name based on the repository (e.g., ghcr.io/nareph/devops-pipeline-aws)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    # Sets the permissions granted to the GITHUB_TOKEN for this job
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # Logs in to GitHub Container Registry using the automatically generated GITHUB_TOKEN
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Extracts useful metadata (tags, labels) for the Docker image based on Git context
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Generates tags like: 'develop', 'sha-XXXXXX'
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+
+      # Builds the Docker image and pushes it to GHCR
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          # Build context: the 'app' folder containing your Dockerfile
+          context: ./app
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Generates a provenance attestation for supply chain security (recommended)
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

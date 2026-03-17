@@ -24,6 +24,10 @@ RUN touch src/main.rs && cargo build --release
 
 FROM alpine:3.21 AS runtime
 
+LABEL org.opencontainers.image.source=https://github.com/nareph/devops-pipeline-aws
+LABEL org.opencontainers.image.description="devops-pipeline-api"
+LABEL org.opencontainers.image.licenses=MIT
+
 # Build argument for port with default value 8080
 # This can be overridden at build time with: --build-arg PORT_ARG=3000
 ARG PORT_ARG=8080
