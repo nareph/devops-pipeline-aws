@@ -15,11 +15,11 @@
 |-------|-----------|
 | Application | Rust (Actix-web) — REST API with `/health` endpoint |
 | Containerization | Docker multi-stage build |
-| Infrastructure as Code | Terraform — AWS VPC, EC2, ALB, S3, DynamoDB |
+| Infrastructure as Code | Terraform — AWS VPC, Security Groups, EC2, ALB, S3 |
 | Configuration Management | Ansible — roles, playbooks, Jinja2 templates |
 | CI/CD Pipeline | GitHub Actions — test, build, deploy, switch, rollback |
 | Deployment Strategy | Blue/Green — zero-downtime, automated healthcheck + rollback |
-| State Management | Terraform remote state — S3 + DynamoDB lock |
+| State Management | Terraform remote state — S3 with `use_lockfile` (native S3 locking) |
 
 ---
 
@@ -33,7 +33,7 @@
                    │
          ┌─────────▼──────────┐
          │   Terraform (AWS)  │
-         │  VPC + ALB + EC2x2 │
+         │  VPC+SG+ ALB+EC2x2 │
          └─────────┬──────────┘
                    │
         ┌──────────▼───────────┐
@@ -53,6 +53,7 @@
         └─────────────────────┘
 ```
 
+
 **Deployment flow:**
 1. Developer pushes to `main`
 2. CI runs tests + builds Docker image + pushes to GHCR
@@ -67,50 +68,153 @@
 
 ```
 devops-pipeline-aws/
-├── app/                        ← Rust API (Actix-web)
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── routes/
-│   │   │   ├── health.rs
-│   │   │   └── api.rs
-│   │   └── config.rs
-│   ├── Cargo.toml
-│   └── Dockerfile
+├── app/ ← Rust API (Actix-web)
+│ ├── src/
+│ │ ├── main.rs
+│ │ ├── routes/
+│ │ │ ├── health.rs
+│ │ │ └── api.rs
+│ │ └── config.rs
+│ ├── Cargo.toml
+│ └── Dockerfile
 ├── terraform/
-│   ├── modules/
-│   │   ├── vpc/
-│   │   ├── ec2/
-│   │   └── alb/
-│   ├── environments/
-│   │   ├── staging/
-│   │   └── production/
-│   └── backend.tf
+│ ├── modules/
+│ │ ├── vpc/
+│ │ │ ├── main.tf
+│ │ │ ├── variables.tf
+│ │ │ └── outputs.tf
+│ │ ├── security-groups/
+│ │ │ ├── main.tf
+│ │ │ ├── variables.tf
+│ │ │ └── outputs.tf
+│ │ ├── ec2/
+│ │ │ ├── main.tf
+│ │ │ ├── variables.tf
+│ │ │ └── outputs.tf
+│ │ └── alb/
+│ │ ├── main.tf
+│ │ ├── variables.tf
+│ │ └── outputs.tf
+│ └── environments/
+│ ├── staging/
+│ │ ├── backend.tf
+│ │ ├── main.tf
+│ │ ├── variables.tf
+│ │ ├── outputs.tf
+│ │ └── terraform.tfvars
+│ └── production/
+│ ├── backend.tf
+│ ├── main.tf
+│ ├── variables.tf
+│ ├── outputs.tf
+│ └── terraform.tfvars
 ├── ansible/
-│   ├── inventory/
-│   ├── roles/
-│   │   ├── common/
-│   │   ├── app_deploy/
-│   │   └── nginx/
-│   ├── playbooks/
-│   └── ansible.cfg
+│ ├── inventory/
+│ ├── roles/
+│ │ ├── common/
+│ │ ├── app_deploy/
+│ │ └── nginx/
+│ ├── playbooks/
+│ └── ansible.cfg
 ├── scripts/
-│   ├── switch-traffic.sh
-│   ├── healthcheck.sh
-│   └── rollback.sh
+│ ├── switch-traffic.sh
+│ ├── healthcheck.sh
+│ └── rollback.sh
 ├── .github/
-│   └── workflows/
-│       ├── ci.yml
-│       ├── deploy-staging.yml
-│       └── deploy-prod.yml
+│ └── workflows/
+│ ├── ci.yml
+│ ├── deploy-staging.yml
+│ └── deploy-prod.yml
 ├── docs/
-│   ├── architecture.png
-│   ├── DEPLOYMENT.md
-│   └── RUNBOOK.md
+│ ├── architecture.png
+│ ├── DEPLOYMENT.md
+│ └── RUNBOOK.md
 ├── ROADMAP.md
 └── README.md
 ```
 
 ---
+
+
+---
+
+## Prerequisites & Manual Steps
+
+### AWS — One-time setup
+
+**1. Créer l'utilisateur IAM `terraform-user`**
+
+Permissions requises : `AmazonEC2FullAccess`, `AmazonS3FullAccess`, `AmazonDynamoDBFullAccess`, `ElasticLoadBalancingFullAccess`, `AmazonVPCFullAccess`
+
+Générer Access Key + Secret Key → configurer le profil AWS :
+
+```bash
+aws configure --profile terraform-user
+# AWS Access Key ID: ...
+# AWS Secret Access Key: ...
+# Default region: us-east-1
+# Default output format: json
+
+**2. Créer le bucket S3 pour le Terraform state**
+```bash
+aws s3 mb s3://devops-pipeline-tfstate-nareph-20260324 \
+  --region us-east-1 --profile terraform-user
+
+aws s3api put-bucket-versioning \
+  --bucket devops-pipeline-tfstate-nareph-20260324 \
+  --versioning-configuration Status=Enabled \
+  --region us-east-1 --profile terraform-user
+```
+
+**3. Créer la clé SSH**
+```bash
+aws ec2 create-key-pair \
+  --key-name devops-staging-key \
+  --query 'KeyMaterial' \
+  --output text > ~/.ssh/devops-staging-key.pem \
+  --profile terraform-user
+
+chmod 400 ~/.ssh/devops-staging-key.pem
+```
+**4. Configurer votre IP pour SSH**
+
+Trouver votre IP publique :
+```bash
+curl -s https://checkip.amazonaws.com
+```
+Créer le fichier terraform/environments/staging/terraform.tfvars (ne pas committer) :
+```bash
+aws_region     = "us-east-1"
+aws_profile    = "terraform-user"
+environment    = "staging"
+instance_type  = "t3.micro"
+key_name       = "devops-staging-key"
+my_ip          = "VOTRE_IP/32"  # ← remplacer par votre IP
+```
+
+### Terraform — déploiement
+```bash
+# Important : exporter le profil AWS avant terraform init
+# car le backend S3 est initialisé avant le chargement des variables
+export AWS_PROFILE=terraform-user
+
+cd terraform/environments/staging
+terraform init
+terraform plan
+terraform apply
+
+# Détruire quand vous avez terminé (évite les frais AWS)
+terraform destroy
+```
+
+### Vérification post-déploiement
+```bash
+# Tester l'accès SSH
+ssh -i ~/.ssh/devops-staging-key.pem ubuntu@$(terraform output -raw blue_public_ip)
+
+# Tester l'ALB (doit retourner 502 - normal car app non déployée)
+curl $(terraform output -raw alb_dns_name)/health
+```
 
 ## Quick start (local)
 
@@ -133,7 +237,8 @@ curl http://localhost:8080/health
 Running on AWS Free Tier: **~$0/month**
 - 2x EC2 `t3.micro` (750h free/month)
 - ALB (~$0.008/LCU-hour, minimal traffic)
-- S3 + DynamoDB (free tier)
+- S3 (state bucket) 5GB, 20k GET requests
+- VPC, Subnets, IGW, Route Tables	Free
 
 > **Destroy infra when not in use:** `terraform destroy`
 

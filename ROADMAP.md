@@ -177,7 +177,7 @@ curl http://localhost:8081/health
 
 ### Ordre de création (important — respecter les dépendances)
 ```
-1. S3 bucket + DynamoDB table  ← pour stocker le state Terraform
+1. S3 bucket (avec versioning) ← pour stocker le state Terraform (locking via use_lockfile)
 2. VPC
 3. Subnets (2 public, dans 2 AZ différentes)
 4. Internet Gateway
@@ -194,9 +194,12 @@ curl http://localhost:8081/health
 ### Structure attendue
 ```
 terraform/
-├── backend.tf                    ← S3 remote state config
 ├── modules/
 │   ├── vpc/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── security-groups/
 │   │   ├── main.tf
 │   │   ├── variables.tf
 │   │   └── outputs.tf
@@ -210,6 +213,7 @@ terraform/
 │       └── outputs.tf
 └── environments/
     └── staging/
+        ├── backend.tf            ← S3 remote state config (use_lockfile = true)
         ├── main.tf               ← appelle les modules
         ├── variables.tf
         ├── outputs.tf

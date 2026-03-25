@@ -61,3 +61,4 @@ terraform.rc
 !terraform.tfvars.example
 ansible/inventory/*.ini
 !ansible/inventory/example.ini
+.vscode/
