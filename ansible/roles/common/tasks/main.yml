@@ -1,0 +1,65 @@
+---
+# roles/common/tasks/main.yml
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: [always]
+
+- name: Install required system packages
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - jq
+      - software-properties-common
+    state: present
+  tags: [packages]
+
+- name: Install Docker using official convenience script
+  shell: |
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sh /tmp/get-docker.sh
+    rm -f /tmp/get-docker.sh
+  args:
+    creates: /usr/bin/docker
+  tags: [docker]
+
+- name: Ensure docker group exists and add user
+  shell: |
+    groupadd docker 2>/dev/null || true
+    usermod -aG docker ubuntu
+  tags: [docker]
+
+- name: Start Docker service
+  shell: systemctl start docker
+  tags: [docker]
+  ignore_errors: true
+
+- name: Enable Docker on boot
+  shell: systemctl enable docker
+  tags: [docker]
+  ignore_errors: true
+
+- name: Wait for Docker to be ready
+  shell: docker info
+  register: docker_info
+  retries: 10
+  delay: 3
+  until: docker_info is success
+  tags: [docker]
+
+- name: Verify Docker is installed
+  command: docker --version
+  register: docker_version
+  changed_when: false
+  tags: [verify]
+
+- name: Display Docker version
+  debug:
+    msg: "Docker installed: {{ docker_version.stdout }}"
+  tags: [verify]

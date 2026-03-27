@@ -1,0 +1,22 @@
+---
+# playbooks/deploy-blue.yml
+# Déploie l'application sur le slot Blue
+
+- name: Deploy Rust application to Blue slot
+  hosts: blue
+  become: true
+  gather_facts: true
+
+  vars:
+    deployment_slot: "blue"
+    container_name: "rust-app-blue"
+
+  roles:
+    - app_deploy
+
+  post_tasks:
+    - name: Display Blue deployment info
+      debug:
+        msg: |
+          ✅ Blue deployment complete!
+          Application available at: http://{{ ansible_host }}:8080/health

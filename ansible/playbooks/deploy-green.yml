@@ -1,0 +1,22 @@
+---
+# playbooks/deploy-green.yml
+# Déploie l'application sur le slot Green
+
+- name: Deploy Rust application to Green slot
+  hosts: green
+  become: true
+  gather_facts: true
+
+  vars:
+    deployment_slot: "green"
+    container_name: "rust-app-green"
+
+  roles:
+    - app_deploy
+
+  post_tasks:
+    - name: Display Green deployment info
+      debug:
+        msg: |
+          ✅ Green deployment complete!
+          Application available at: http://{{ ansible_host }}:8080/health

@@ -1,0 +1,87 @@
+---
+# roles/app_deploy/tasks/main.yml
+# Déploie l'application Rust sur le slot spécifié
+
+- name: Ensure docker group exists (just in case)
+  group:
+    name: docker
+    state: present
+  become: true
+  tags: [docker]
+
+- name: Add ubuntu user to docker group
+  user:
+    name: ubuntu
+    groups: docker
+    append: yes
+  become: true
+  tags: [docker]
+
+- name: Log in to GitHub Container Registry
+  command: docker login ghcr.io -u nareph -p "{{ lookup('env', 'GHCR_TOKEN') }}"
+  become: true
+  when: lookup('env', 'GHCR_TOKEN') != ''
+  tags: [docker]
+
+- name: Pull Docker image
+  docker_image:
+    name: "{{ image_name }}:{{ image_tag }}"
+    source: pull
+    force_source: yes
+  become: true
+  register: pull_result
+  tags: [docker]
+
+- name: Stop and remove existing container if running
+  docker_container:
+    name: "{{ container_name }}"
+    state: absent
+  become: true
+  ignore_errors: true
+  tags: [docker]
+
+- name: Run new container
+  docker_container:
+    name: "{{ container_name }}"
+    image: "{{ image_name }}:{{ image_tag }}"
+    state: started
+    restart_policy: always
+    ports:
+      - "{{ host_port }}:{{ container_port }}"
+    env:
+      DEPLOYMENT_SLOT: "{{ deployment_slot }}"
+      APP_VERSION: "{{ image_tag }}"
+      PORT: "{{ container_port }}"
+  become: true
+  register: container_result
+  tags: [docker]
+
+- name: Wait for container to be healthy
+  wait_for:
+    port: "{{ host_port }}"
+    host: "localhost"
+    timeout: 60
+  become: true
+  tags: [docker]
+
+- name: Test health endpoint
+  uri:
+    url: "http://localhost:{{ host_port }}/health"
+    return_content: yes
+  register: health_check
+  until: health_check.status == 200
+  retries: 10
+  delay: 3
+  become: true
+  tags: [docker]
+
+- name: Display deployment result
+  debug:
+    msg: |
+      ====================================
+      Deployment complete!
+      Slot: {{ deployment_slot }}
+      Container: {{ container_name }}
+      Health check: {{ health_check.content }}
+      ====================================
+  tags: [docker]

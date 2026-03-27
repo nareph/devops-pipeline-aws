@@ -216,6 +216,72 @@ ssh -i ~/.ssh/devops-staging-key.pem ubuntu@$(terraform output -raw blue_public_
 curl $(terraform output -raw alb_dns_name)/health
 ```
 
+### Ansible — Configuration & Deployment
+
+**1. Activer l'environnement Python**
+
+```bash
+cd ~/projets/devops-pipeline-aws
+python3 -m venv .venv
+source .venv/bin/activate
+pip install ansible ansible-lint
+```
+
+**2. Configurer l'inventaire**
+
+```bash
+cd ansible
+
+# Récupérer les IPs depuis Terraform
+BLUE_IP=$(cd ../terraform/environments/staging && terraform output -raw blue_public_ip)
+GREEN_IP=$(cd ../terraform/environments/staging && terraform output -raw green_public_ip)
+ALB_DNS=$(cd ../terraform/environments/staging && terraform output -raw alb_dns_name)
+
+# Créer l'inventaire staging
+cat > inventory/staging.ini << EOF
+[blue]
+blue_01 ansible_host=${BLUE_IP}
+
+[green]
+green_01 ansible_host=${GREEN_IP}
+
+[staging:children]
+blue
+green
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=~/.ssh/devops-staging-key.pem
+EOF
+```
+**3. Provisionner les serveurs (installer Docker)**
+```bash
+ansible-playbook -i inventory/staging.ini playbooks/provision.yml
+```
+**4. Déployer l'application**
+```bash
+# Déployer sur Blue (premier déploiement)
+ansible-playbook -i inventory/staging.ini playbooks/deploy-blue.yml
+
+# Vérifier que l'application répond VIA L'ALB (pas directement)
+# Note: L'accès direct aux EC2 est bloqué par le Security Group
+curl http://${ALB_DNS}/health
+
+# Déployer sur Green
+ansible-playbook -i inventory/staging.ini playbooks/deploy-green.yml
+```
+
+**5. Blue/Green Switch**
+```bash
+# Basculer le trafic vers Green
+ansible-playbook -i inventory/staging.ini playbooks/switch-traffic.yml -e "target_slot=green"
+
+# Vérifier via l'ALB que le slot a bien changé
+curl http://${ALB_DNS}/health
+
+# Rollback vers Blue si nécessaire
+ansible-playbook -i inventory/staging.ini playbooks/rollback.yml
+```
 ## Quick start (local)
 
 ```bash

@@ -62,3 +62,4 @@ terraform.rc
 ansible/inventory/*.ini
 !ansible/inventory/example.ini
 .vscode/
+.venv

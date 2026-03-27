@@ -1,0 +1,101 @@
+---
+# playbooks/rollback.yml
+# Rollback vers le slot précédent (détecte automatiquement le slot actif)
+
+- name: Rollback to previous slot
+  hosts: localhost
+  gather_facts: no
+  become: no
+
+  vars:
+    aws_region: "us-east-1"
+    aws_profile: "terraform-user"
+    health_check_retries: 10
+    health_check_delay: 10
+
+  tasks:
+    - name: Load Terraform outputs
+      command: "terraform output -raw {{ item }}"
+      args:
+        chdir: "{{ playbook_dir }}/../terraform/environments/staging"
+      loop:
+        - alb_listener_arn
+        - blue_target_group_arn
+        - green_target_group_arn
+        - alb_dns_name
+      register: tf_outputs
+      changed_when: false
+
+    - name: Set facts from Terraform outputs
+      set_fact:
+        alb_listener_arn: "{{ tf_outputs.results[0].stdout }}"
+        blue_tg_arn: "{{ tf_outputs.results[1].stdout }}"
+        green_tg_arn: "{{ tf_outputs.results[2].stdout }}"
+        alb_dns_name: "{{ tf_outputs.results[3].stdout }}"
+
+    - name: Get current active slot from ALB
+      uri:
+        url: "http://{{ alb_dns_name }}/health"
+        return_content: yes
+      register: current_health
+
+    - name: Determine current and rollback slots
+      set_fact:
+        current_slot: "{{ current_health.json.slot }}"
+        rollback_slot: "{{ 'blue' if current_health.json.slot == 'green' else 'green' }}"
+        rollback_tg: "{{ blue_tg_arn if current_health.json.slot == 'green' else green_tg_arn }}"
+
+    - name: Display rollback information
+      debug:
+        msg: |
+          ====================================
+          🔄 Performing rollback
+          📍 Current slot: {{ current_slot }}
+          🎯 Rollback to: {{ rollback_slot }}
+          🌐 ALB DNS: {{ alb_dns_name }}
+          ====================================
+
+    # ✅ Vérifier la santé du target group de rollback AVANT le switch
+    - name: Check rollback target group health via AWS CLI
+      command: |
+        aws elbv2 describe-target-health \
+          --target-group-arn {{ rollback_tg }} \
+          --region {{ aws_region }} \
+          --profile {{ aws_profile }} \
+          --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+          --output text
+      register: tg_health
+      until: tg_health.stdout == 'healthy'
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      changed_when: false
+
+    - name: Execute rollback
+      command: |
+        aws elbv2 modify-listener \
+          --listener-arn {{ alb_listener_arn }} \
+          --default-actions Type=forward,TargetGroupArn={{ rollback_tg }} \
+          --region {{ aws_region }} \
+          --profile {{ aws_profile }}
+
+    - name: Wait for rollback to take effect
+      wait_for:
+        timeout: 5
+
+    - name: Verify rollback was successful
+      uri:
+        url: "http://{{ alb_dns_name }}/health"
+        return_content: yes
+      register: post_rollback_health
+      until: post_rollback_health.json.slot == rollback_slot
+      retries: 10
+      delay: 3
+
+    - name: Display rollback result
+      debug:
+        msg: |
+          ====================================
+          ✅ Rollback completed successfully!
+          🟢 Traffic now routed to: {{ rollback_slot }}
+          🌐 Health check response: {{ post_rollback_health.content }}
+          ====================================
