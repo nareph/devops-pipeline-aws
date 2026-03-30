@@ -31,7 +31,6 @@ module "security_groups" {
 
   vpc_id      = module.vpc.vpc_id
   environment = var.environment
-  my_ip       = var.my_ip
 }
 
 # Module EC2

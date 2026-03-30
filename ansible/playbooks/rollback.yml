@@ -4,8 +4,8 @@
 
 - name: Rollback to previous slot
   hosts: localhost
-  gather_facts: no
-  become: no
+  gather_facts: false
+  become: false
 
   vars:
     aws_region: "us-east-1"

@@ -28,12 +28,6 @@ variable "instance_type" {
   default     = "t3.micro" # Free tier
 }
 
-variable "my_ip" {
-  description = "Your public IP address for SSH access (format: x.x.x.x/32)"
-  type        = string
-  sensitive   = true
-}
-
 variable "key_name" {
   description = "Name of the SSH key pair"
   type        = string

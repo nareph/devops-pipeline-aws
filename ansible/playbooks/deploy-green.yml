@@ -3,7 +3,7 @@
 # Déploie l'application sur le slot Green
 
 - name: Deploy Rust application to Green slot
-  hosts: green
+  hosts: slot_green
   become: true
   gather_facts: true
 

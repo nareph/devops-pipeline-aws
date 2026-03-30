@@ -5,8 +5,8 @@
 
 - name: Switch ALB traffic to target slot
   hosts: localhost
-  gather_facts: no
-  become: no
+  gather_facts: false
+  become: false
 
   vars:
     target_slot: "green" # blue ou green
