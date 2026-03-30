@@ -396,6 +396,38 @@ curl http://localhost:8080/health
 
 ---
 
+## Important — Infrastructure lifecycle
+
+The CI/CD pipeline deploys the **application** but does NOT manage infrastructure.
+Infrastructure is managed separately with Terraform from your local machine.
+
+**Before the first deployment:**
+```bash
+# 1. Provision AWS resources
+cd terraform/environments/staging
+terraform apply
+
+# 2. Push to main to trigger the pipeline
+git push origin main
+```
+
+**To tear down (avoid AWS costs):**
+```bash
+cd terraform/environments/staging
+terraform destroy
+```
+
+> If you run `terraform destroy` and then push to `main`, the deploy workflow will
+> fail immediately at the "Verify infrastructure exists" step with a clear message
+> rather than a cryptic error deep in the Ansible steps:
+> ```
+> ❌ Infrastructure not found — run 'terraform apply' first
+> ```
+> This is expected behaviour — simply run `terraform apply` again to restore the
+> infrastructure and re-trigger the workflow.
+
+---
+
 ## Troubleshooting
 
 ### `unknown plugin 'amazon.aws.aws_ssm'`

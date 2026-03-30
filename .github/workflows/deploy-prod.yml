@@ -1,0 +1,170 @@
+# .github/workflows/deploy-prod.yml
+# Manual deployment to production — choose target slot and image tag
+# Pulls the already-built image from GHCR — does NOT rebuild
+# Uses OIDC to authenticate with AWS — no long-lived secrets stored
+# Flow: deploy to slot → healthcheck → switch ALB → verify → rollback on failure
+
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_slot:
+        description: 'Target slot to deploy to'
+        required: true
+        type: choice
+        options:
+          - blue
+          - green
+      image_tag:
+        description: 'Docker image tag to deploy (e.g. sha-abc1234, latest)'
+        required: false
+        type: string
+        default: 'latest'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy-production:
+    name: Deploy to Production (${{ inputs.target_slot }})
+    runs-on: ubuntu-latest
+    environment: production            # Requires manual approval from reviewers
+
+    permissions:
+      contents: read
+      id-token: write                  # Required for OIDC
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Print deployment parameters
+        run: |
+          echo "🎯 Target slot : ${{ inputs.target_slot }}"
+          echo "🐳 Image tag   : ${{ inputs.image_tag }}"
+          echo "📦 Image       : ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}"
+
+      # ── AWS authentication via OIDC ───────────────────────────────────────────
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PRODUCTION }}
+          role-session-name: GitHubActions-Production-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Verify infrastructure exists ──────────────────────────────────────────
+      # Fails fast with a clear message if terraform apply has not been run yet.
+      # Also captures ALB DNS once here — reused in verify step below.
+
+      - name: Verify infrastructure exists
+        id: infra
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names "staging-alb" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "NOT_FOUND")
+          if [ "$ALB_DNS" = "NOT_FOUND" ] || [ "$ALB_DNS" = "None" ]; then
+            echo "❌ Infrastructure not found — run 'terraform apply' first"
+            echo "   cd terraform/environments/staging && terraform apply"
+            exit 1
+          fi
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "✅ ALB found: $ALB_DNS"
+
+      # ── Ansible ───────────────────────────────────────────────────────────────
+
+      - name: Install Ansible + AWS dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible boto3 botocore
+          ansible-galaxy collection install amazon.aws --force
+
+      - name: Install AWS Session Manager plugin
+        run: |
+          curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+            -o /tmp/ssm-plugin.deb
+          sudo dpkg -i /tmp/ssm-plugin.deb
+
+      - name: Deploy to ${{ inputs.target_slot }} slot
+        working-directory: ansible
+        run: |
+          ansible-playbook \
+            -i inventory/staging.aws_ec2.yml \
+            playbooks/deploy-${{ inputs.target_slot }}.yml \
+            -e "image_tag=${{ inputs.image_tag }}" \
+            --limit slot_${{ inputs.target_slot }}
+
+      # ── Health check before traffic switch ────────────────────────────────────
+      # Uses AWS CLI directly — healthcheck.yml does not exist yet.
+      # Polls describe-target-health until the slot is healthy or times out.
+
+      - name: Wait for ${{ inputs.target_slot }} slot to be healthy
+        run: |
+          TARGET_TG=$(aws elbv2 describe-target-groups \
+            --names "staging-${{ inputs.target_slot }}-tg" \
+            --query 'TargetGroups[0].TargetGroupArn' \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          echo "Polling target group: $TARGET_TG"
+          for i in {1..20}; do
+            STATE=$(aws elbv2 describe-target-health \
+              --target-group-arn "$TARGET_TG" \
+              --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+              --output text \
+              --region ${{ env.AWS_REGION }})
+            echo "Attempt $i/20 — state: $STATE"
+            if [ "$STATE" = "healthy" ]; then
+              echo "✅ Slot ${{ inputs.target_slot }} is healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ Slot ${{ inputs.target_slot }} not healthy after 200s"
+          exit 1
+
+      # ── Blue/Green traffic switch ─────────────────────────────────────────────
+
+      - name: Switch ALB traffic to ${{ inputs.target_slot }}
+        working-directory: ansible
+        run: |
+          ansible-playbook \
+            -i inventory/staging.aws_ec2.yml \
+            playbooks/switch-traffic.yml \
+            -e "target_slot=${{ inputs.target_slot }}"
+
+      # ── Verify switch ─────────────────────────────────────────────────────────
+      # Reuses ALB DNS captured in the infra check step above.
+
+      - name: Verify ALB switched to ${{ inputs.target_slot }}
+        id: verify
+        run: |
+          ALB_DNS="${{ steps.infra.outputs.alb_dns }}"
+          echo "Verifying ALB at http://${ALB_DNS}/health ..."
+          for i in {1..30}; do
+            RESPONSE=$(curl -s "http://${ALB_DNS}/health" || true)
+            if echo "$RESPONSE" | grep -q "\"slot\":\"${{ inputs.target_slot }}\""; then
+              echo "✅ ALB switched successfully to ${{ inputs.target_slot }}"
+              echo "Response: $RESPONSE"
+              exit 0
+            fi
+            echo "Attempt $i/30 — waiting..."
+            sleep 2
+          done
+          echo "❌ Verification failed after 60s"
+          exit 1
+
+      # ── Automatic rollback on failure ─────────────────────────────────────────
+
+      - name: Rollback on failure
+        if: failure()
+        working-directory: ansible
+        run: |
+          echo "⚠️  Deployment or verification failed — triggering rollback..."
+          ansible-playbook \
+            -i inventory/staging.aws_ec2.yml \
+            playbooks/rollback.yml

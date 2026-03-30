@@ -1,0 +1,132 @@
+# .github/workflows/deploy-staging.yml
+# Triggered after publish-docker-image.yml completes on main
+# Pulls the already-built image from GHCR and deploys to Blue + Green via Ansible SSM
+# Uses OIDC to authenticate with AWS — no long-lived secrets stored
+
+name: Deploy to Staging
+
+on:
+  workflow_run:
+    workflows: ["Publish Docker image to GHCR"]  # ← triggered after publish
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:                               # ← manual trigger if needed
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (default: latest)'
+        required: false
+        type: string
+        default: 'latest'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    # Only run if the triggering workflow succeeded (ignored on workflow_dispatch)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    permissions:
+      contents: read
+      id-token: write                              # Required for OIDC
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Resolve the image tag to deploy:
+      # - workflow_run: use the short SHA of the commit that triggered publish
+      # - workflow_dispatch: use the manually provided tag (default: latest)
+      - name: Resolve image tag
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_run" ]; then
+            SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+            echo "tag=sha-${SHA}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      # ── AWS authentication via OIDC ───────────────────────────────────────────
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          role-session-name: GitHubActions-Staging-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Verify infrastructure exists ──────────────────────────────────────────
+      # Fails fast with a clear message if terraform apply has not been run yet.
+      # Also captures ALB DNS once here — reused in the health check below.
+
+      - name: Verify infrastructure exists
+        id: infra
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names "staging-alb" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || echo "NOT_FOUND")
+          if [ "$ALB_DNS" = "NOT_FOUND" ] || [ "$ALB_DNS" = "None" ]; then
+            echo "❌ Infrastructure not found — run 'terraform apply' first"
+            echo "   cd terraform/environments/staging && terraform apply"
+            exit 1
+          fi
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "✅ ALB found: $ALB_DNS"
+
+      # ── Ansible ───────────────────────────────────────────────────────────────
+
+      - name: Install Ansible + AWS dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible boto3 botocore
+          ansible-galaxy collection install amazon.aws --force
+
+      - name: Install AWS Session Manager plugin
+        run: |
+          curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+            -o /tmp/ssm-plugin.deb
+          sudo dpkg -i /tmp/ssm-plugin.deb
+
+      - name: Deploy to Staging — Blue slot
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory/staging.aws_ec2.yml playbooks/deploy-blue.yml \
+            -e "image_tag=${{ steps.image.outputs.tag }}" \
+            --limit slot_blue
+
+      - name: Deploy to Staging — Green slot
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory/staging.aws_ec2.yml playbooks/deploy-green.yml \
+            -e "image_tag=${{ steps.image.outputs.tag }}" \
+            --limit slot_green
+
+      # ── Health check ──────────────────────────────────────────────────────────
+      # Reuses ALB DNS captured in the infra check step above.
+
+      - name: Health check after deployment
+        run: |
+          ALB_DNS="${{ steps.infra.outputs.alb_dns }}"
+          echo "Checking ALB at http://${ALB_DNS}/health ..."
+          for i in {1..30}; do
+            RESPONSE=$(curl -s "http://${ALB_DNS}/health" || true)
+            if echo "$RESPONSE" | grep -q '"status":"ok"'; then
+              echo "✅ ALB is healthy — image tag: ${{ steps.image.outputs.tag }}"
+              echo "Response: $RESPONSE"
+              exit 0
+            fi
+            echo "Attempt $i/30 — waiting..."
+            sleep 2
+          done
+          echo "❌ ALB health check failed after 60s"
+          exit 1
