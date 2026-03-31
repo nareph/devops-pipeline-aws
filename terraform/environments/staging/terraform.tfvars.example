@@ -1,0 +1,10 @@
+# AWS Configuration
+aws_region  = "eu-west-1"
+aws_profile = "terraform-user"
+
+# Environment
+environment = "staging"
+
+# Instance Configuration
+instance_type = "t2.micro"
+instance_count = 1

@@ -1,0 +1,20 @@
+---
+# playbooks/provision.yml
+# Configuration initiale des serveurs : installe Docker et les dépendances
+
+- name: Provision servers with Docker
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - common
+
+  post_tasks:
+    - name: Display summary
+      debug:
+        msg: |
+          ====================================
+          Provisioning complete!
+          Docker installed on {{ ansible_hostname }}
+          ====================================

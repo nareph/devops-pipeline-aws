@@ -1,0 +1,132 @@
+---
+# playbooks/switch-traffic.yml
+# Bascule le trafic de l'ALB vers le slot spécifié (blue ou green)
+# Usage: ansible-playbook -i inventory/staging.ini playbooks/switch-traffic.yml -e "target_slot=green"
+
+- name: Switch ALB traffic to target slot
+  hosts: localhost
+  gather_facts: false
+  become: false
+
+  vars:
+    target_slot: "green" # blue ou green
+    aws_region: "us-east-1"
+    aws_profile: "terraform-user"
+    health_check_retries: 10
+    health_check_delay: 10
+
+  tasks:
+    - name: Validate target slot
+      fail:
+        msg: "target_slot must be 'blue' or 'green'"
+      when: target_slot not in ['blue', 'green']
+
+    - name: Load Terraform outputs
+      command: "terraform output -raw {{ item }}"
+      args:
+        chdir: "{{ playbook_dir }}/../terraform/environments/staging"
+      loop:
+        - alb_listener_arn
+        - blue_target_group_arn
+        - green_target_group_arn
+        - alb_dns_name
+      register: tf_outputs
+      changed_when: false
+
+    - name: Set facts from Terraform outputs
+      set_fact:
+        alb_listener_arn: "{{ tf_outputs.results[0].stdout }}"
+        blue_tg_arn: "{{ tf_outputs.results[1].stdout }}"
+        green_tg_arn: "{{ tf_outputs.results[2].stdout }}"
+        alb_dns_name: "{{ tf_outputs.results[3].stdout }}"
+
+    - name: Set target group based on slot
+      set_fact:
+        target_tg_arn: "{{ blue_tg_arn if target_slot == 'blue' else green_tg_arn }}"
+        current_tg_arn: "{{ green_tg_arn if target_slot == 'blue' else blue_tg_arn }}"
+
+    - name: Display switch information
+      debug:
+        msg: |
+          ====================================
+          🔄 Switching traffic to: {{ target_slot }}
+          📍 Listener: {{ alb_listener_arn }}
+          🎯 Target Group: {{ target_tg_arn }}
+          🌐 ALB DNS: {{ alb_dns_name }}
+          ====================================
+
+    # ✅ Vérifier la santé du target group cible AVANT le switch
+    - name: Check target group health via AWS CLI
+      command: |
+        aws elbv2 describe-target-health \
+          --target-group-arn {{ target_tg_arn }} \
+          --region {{ aws_region }} \
+          --profile {{ aws_profile }} \
+          --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+          --output text
+      register: tg_health
+      until: tg_health.stdout == 'healthy'
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      changed_when: false
+
+    - name: Verify target group health result
+      debug:
+        msg: "✅ Target group {{ target_slot }} is healthy (state: {{ tg_health.stdout }})"
+
+    - name: Get current active slot from ALB
+      uri:
+        url: "http://{{ alb_dns_name }}/health"
+        return_content: yes
+      register: current_health
+      changed_when: false
+
+    - name: Check if already on target slot
+      set_fact:
+        already_on_target: "{{ current_health.json.slot == target_slot }}"
+
+    - name: Skip switch if already on target
+      debug:
+        msg: "⚠️  Traffic already pointing to {{ target_slot }}. No switch needed."
+      when: already_on_target
+
+    - name: End play if already on target
+      meta: end_play
+      when: already_on_target
+
+    - name: Modify ALB listener to forward to target slot
+      command: |
+        aws elbv2 modify-listener \
+          --listener-arn {{ alb_listener_arn }} \
+          --default-actions Type=forward,TargetGroupArn={{ target_tg_arn }} \
+          --region {{ aws_region }} \
+          --profile {{ aws_profile }}
+      register: switch_result
+
+    - name: Wait for switch to take effect
+      wait_for:
+        timeout: 5
+
+    - name: Verify switch was successful
+      uri:
+        url: "http://{{ alb_dns_name }}/health"
+        return_content: yes
+      register: post_switch_health
+      until: post_switch_health.json.slot == target_slot
+      retries: 10
+      delay: 3
+
+    - name: Display switch result
+      debug:
+        msg: |
+          ====================================
+          ✅ Switch completed successfully!
+          🟢 Traffic now routed to: {{ target_slot }}
+          🌐 Health check response: {{ post_switch_health.content }}
+          ====================================
+
+    - name: Display rollback command for reference
+      debug:
+        msg: |
+          🔄 To rollback, run:
+          ansible-playbook -i inventory/staging.ini playbooks/switch-traffic.yml -e "target_slot={{ 'blue' if target_slot == 'green' else 'green' }}"

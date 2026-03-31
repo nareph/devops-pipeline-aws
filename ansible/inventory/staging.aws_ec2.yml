@@ -1,0 +1,19 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-east-1
+filters:
+  tag:Environment: staging
+keyed_groups:
+  - key: ec2_tags.Color
+    prefix: slot
+hostnames:
+  - instance-id
+compose:
+  ansible_host: instance_id
+  ansible_connection: "'amazon.aws.aws_ssm'"
+  ansible_become: "true"
+  ansible_become_method: "'sudo'"
+  ansible_python_interpreter: "'/usr/bin/python3'"
+  ansible_aws_ssm_bucket_name: "'devops-pipeline-ansible-ssm-nareph'"
+  ansible_aws_ssm_region: "'us-east-1'"
+  ansible_remote_tmp: "'/tmp/.ansible/tmp'"
