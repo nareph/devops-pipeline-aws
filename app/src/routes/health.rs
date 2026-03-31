@@ -1,8 +1,8 @@
 // routes/health.rs
+use crate::config::Config;
 use actix_web::{Responder, Result, web};
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
-use crate::config::Config;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Health {
@@ -29,7 +29,7 @@ pub async fn health(config: web::Data<Config>) -> Result<impl Responder> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::{test, web, App};
+    use actix_web::{App, test, web};
 
     #[actix_web::test]
     async fn test_build_health() {
@@ -46,7 +46,7 @@ mod tests {
         assert_eq!(health_data.slot, "test");
 
         let diff = Utc::now() - health_data.timestamp;
-        assert!(diff.num_seconds() < 5 , "timestamp should be recent");
+        assert!(diff.num_seconds() < 5, "timestamp should be recent");
     }
 
     #[actix_web::test]
@@ -60,12 +60,11 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .app_data(web::Data::new(config))
-                .route("/health", web::get().to(super::health))
-        ).await;
+                .route("/health", web::get().to(super::health)),
+        )
+        .await;
 
-        let req = test::TestRequest::get()
-            .uri("/health")
-            .to_request();
+        let req = test::TestRequest::get().uri("/health").to_request();
 
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 200);
@@ -77,6 +76,6 @@ mod tests {
         assert_eq!(health_response.slot, "integration");
 
         let diff = Utc::now() - health_response.timestamp;
-        assert!(diff.num_seconds() < 5 , "timestamp should be recent");
+        assert!(diff.num_seconds() < 5, "timestamp should be recent");
     }
 }

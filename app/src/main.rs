@@ -1,10 +1,10 @@
 // main.rs
-use actix_web::{web, App, HttpServer, middleware::Logger};
-use log::{info, debug};
+use actix_web::{App, HttpServer, middleware::Logger, web};
 use env_logger::Env;
+use log::{debug, info};
 
-mod routes;
 mod config;
+mod routes;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -23,10 +23,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .app_data(web::Data::new(config.clone()))
-            .service(
-                web::scope("/api")
-                    .route("/info", web::get().to(routes::api::info))
-            )
+            .service(web::scope("/api").route("/info", web::get().to(routes::api::info)))
             .route("/health", web::get().to(routes::health::health))
     })
     .bind(("0.0.0.0", port))?

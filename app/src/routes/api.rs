@@ -1,7 +1,7 @@
 // routes/api.rs
-use actix_web::{Responder, Result, web};
-use serde::{Serialize, Deserialize};
 use crate::config::Config;
+use actix_web::{Responder, Result, web};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Info {
@@ -24,7 +24,7 @@ pub async fn info(config: web::Data<Config>) -> Result<impl Responder> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::{test, web, App};
+    use actix_web::{App, test, web};
 
     // Unit test
     #[actix_web::test]
@@ -53,12 +53,11 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .app_data(web::Data::new(config))
-                .route("/api/info", web::get().to(super::info))
-        ).await;
+                .route("/api/info", web::get().to(super::info)),
+        )
+        .await;
 
-        let req = test::TestRequest::get()
-            .uri("/api/info")
-            .to_request();
+        let req = test::TestRequest::get().uri("/api/info").to_request();
 
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 200);
@@ -84,12 +83,11 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .app_data(web::Data::new(config))
-                .route("/api/info", web::get().to(super::info))
-        ).await;
+                .route("/api/info", web::get().to(super::info)),
+        )
+        .await;
 
-        let req = test::TestRequest::get()
-            .uri("/api/info")
-            .to_request();
+        let req = test::TestRequest::get().uri("/api/info").to_request();
 
         let resp = test::call_service(&app, req).await;
         let actual: Info = test::read_body_json(resp).await;

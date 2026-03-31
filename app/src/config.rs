@@ -1,7 +1,7 @@
 // config.rs
-use std::env;
+use log::{debug, info, warn};
 use serde::Deserialize;
-use log::{info, warn, debug};
+use std::env;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
