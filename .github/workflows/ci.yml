@@ -21,14 +21,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now, avoids deprecation warnings
 
 jobs:
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read             # required to checkout the repository and download actions
+
     defaults:
       run:
-        working-directory: app       # applies to all run steps — no need for cd app
+        working-directory: app   # applies to all run steps — no need for cd app
 
     steps:
       - name: Checkout repository
